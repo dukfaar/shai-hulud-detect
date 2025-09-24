@@ -334,6 +334,7 @@ async function checkSecondComingRepos(scanDir: string): Promise<void> {
 }
 
 async function checkFileHashes(scanDir: string): Promise<void> {
+    printStatus(COLORS.BLUE, `🔍 Looking for js/ts/json files`);
     // Use generator to collect files first
     const jsFiles: string[] = [];
     for await (const file of findFilesByPattern(scanDir, /\.(js|ts|json)$/)) {
@@ -341,18 +342,11 @@ async function checkFileHashes(scanDir: string): Promise<void> {
     }
     
     printStatus(COLORS.BLUE, `🔍 Checking ${jsFiles.length} files for known malicious content...`);
-    let fileProcessedCounter = 0;
     const hashPromises = jsFiles.map(async (file) => {
         try {
             const data = await Deno.readFile(file);
             const hash = await sha256(data);
-            fileProcessedCounter++;
-            // Progress indicator every 10 files
-            if (fileProcessedCounter % 10 === 0) {
-                const progressText = `\r\x1b[K${fileProcessedCounter} / ${jsFiles.length} checked (${Math.floor((fileProcessedCounter) * 100 / jsFiles.length)}%)`;
-                Deno.stdout.writeSync(new TextEncoder().encode(progressText));
-            }
-            
+                        
             // Check for malicious files
             if (MALICIOUS_HASHLIST.includes(hash)) {
                 MALICIOUS_HASHES.push(`${file}:${hash}`);
@@ -363,12 +357,10 @@ async function checkFileHashes(scanDir: string): Promise<void> {
     });
 
     await Promise.all(hashPromises);
-
-    // Clear progress line
-    Deno.stdout.writeSync(new TextEncoder().encode(`\r\x1b[K`));
 }
 
 async function checkPackages(scanDir: string): Promise<void> {
+    printStatus(COLORS.BLUE, `🔍 Looking for package.json files`);
     // Use generator to collect package files
     const packageFiles: string[] = [];
     for await (const file of findFilesByPattern(scanDir, /package\.json$/)) {
@@ -376,18 +368,11 @@ async function checkPackages(scanDir: string): Promise<void> {
     }
     
     printStatus(COLORS.BLUE, `🔍 Checking ${packageFiles.length} package.json files for compromised packages...`);
-    let fileProcessedCounter = 0;
     const pkgNameVersionRegexEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
     const packagePromises = packageFiles.map(async (packageFile) => {
         try {
             const content = await Deno.readTextFile(packageFile);
-            fileProcessedCounter++;
-            // Progress indicator every 5 files
-            if (fileProcessedCounter % 5 === 0) {
-                const progressText = `\r\x1b[K${fileProcessedCounter} / ${packageFiles.length} checked (${Math.floor((fileProcessedCounter) * 100 / packageFiles.length)}%)`;
-                Deno.stdout.writeSync(new TextEncoder().encode(progressText));
-            }
 
             // Try to parse JSON to preserve dependency order like Bash (awk over file order)
             let handledViaJson = false;
@@ -469,8 +454,6 @@ async function checkPackages(scanDir: string): Promise<void> {
     });
     
     await Promise.all(packagePromises);
-    // Clear progress line
-    Deno.stdout.writeSync(new TextEncoder().encode(`\r\x1b[K`));
 }
 
 async function checkPostinstallHooks(scanDir: string): Promise<void> {
@@ -1219,45 +1202,6 @@ function extractVersionFromPackageLock(content: string, packageName: string): st
     return '';
 }
 
-// Native Deno progress indicator using stdout.writeSync
-class ProgressIndicator {
-    private intervalId?: number;
-    private counter = 0;
-    private readonly symbols = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    private readonly encoder = new TextEncoder();
-
-    start(message: string): void {
-        this.counter = 0;
-        this.intervalId = setInterval(() => {
-            const text = `\r${message} ${this.symbols[this.counter % this.symbols.length]} `;
-            Deno.stdout.writeSync(this.encoder.encode(text));
-            this.counter++;
-        }, 150);
-    }
-
-    stop(): void {
-        if (this.intervalId) {
-            clearInterval(this.intervalId);
-            this.intervalId = undefined;
-        }
-        // Clear the line
-        const clearText = '\r' + ' '.repeat(80) + '\r';
-        Deno.stdout.writeSync(this.encoder.encode(clearText));
-    }
-
-    async withProgress<T>(promise: Promise<T>, message: string): Promise<T> {
-        this.start(message);
-        try {
-            const result = await promise;
-            return result;
-        } finally {
-            this.stop();
-        }
-    }
-}
-
-const progressIndicator = new ProgressIndicator();
-
 // Ensure deterministic ordering of findings to improve parity with Bash output
 function sortAllFindings(): void {
     const arrays: string[][] = [
@@ -1778,31 +1722,25 @@ async function main(): Promise<void> {
     }
     console.log();
 
-    // Run core Shai-Hulud detection checks with enhanced progress indicators
-    await progressIndicator.withProgress(
-        Promise.all([
-            checkWorkflowFiles(scanDir),
-            checkPostinstallHooks(scanDir),
-            checkContent(scanDir),
-            checkCryptoTheftPatterns(scanDir),
-            checkTrufflehogActivity(scanDir),
-            checkGitBranches(scanDir),
-            checkShaiHuludRepos(scanDir),
-            checkPackageIntegrity(scanDir),
-            // New November 2025 checks
-            checkBunAttackFiles(scanDir),
-            checkNewWorkflowPatterns(scanDir),
-            checkPreinstallBunPatterns(scanDir),
-            checkGithubActionsRunner(scanDir),
-            checkSecondComingRepos(scanDir)
-        ]),
-        "🔍 Running security checks..."
-    );
+    await Promise.all([
+        checkWorkflowFiles(scanDir),
+        checkPostinstallHooks(scanDir),
+        checkContent(scanDir),
+        checkCryptoTheftPatterns(scanDir),
+        checkTrufflehogActivity(scanDir),
+        checkGitBranches(scanDir),
+        checkShaiHuludRepos(scanDir),
+        checkPackageIntegrity(scanDir),
+        // New November 2025 checks
+        checkBunAttackFiles(scanDir),
+        checkNewWorkflowPatterns(scanDir),
+        checkPreinstallBunPatterns(scanDir),
+        checkGithubActionsRunner(scanDir),
+        checkSecondComingRepos(scanDir),
+        checkFileHashes(scanDir),
+        checkPackages(scanDir)
+    ])
     
-    // These need to run sequentially due to progress indicators
-    // Match Bash output order: file hash check before package.json check
-    await checkFileHashes(scanDir);
-    await checkPackages(scanDir);
     
     // Run additional security checks only in paranoid mode
     if (paranoidMode) {
